@@ -1,0 +1,103 @@
+networks:
+  internal:
+    external: false
+  remotely-network:
+    driver: bridge
+    external: false
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1
+
+services:
+
+  traefik:
+    image: "traefik:v3.2"
+    container_name: "traefik"
+    restart: unless-stopped
+    command:
+      #- "--log.level=DEBUG"
+      ## For reference the staging server is for testing certificate requests without hitting limits.
+      #- "--certificatesresolvers.myresolver.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.http.tls.domains[0].main=yourdomain.com"
+      - "--entrypoints.websecure.http.tls.domains[0].sans=*.yourdomain.com"
+      - "--entrypoints.websecure.http.tls.certresolver=myresolver"
+      - "--certificatesresolvers.myresolver.acme.dnschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.myresolver.acme.email=<your-email>"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+      - "--serverstransport.insecureskipverify"
+    environment:
+      - "CLOUDFLARE_EMAIL=<your-cloudflare-email>"
+      - "CLOUDFLARE_DNS_API_TOKEN=<your-cloudflare-api-token>"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/your_data_path/letsencrypt:/letsencrypt"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    # Uncomment the following lines to enable Traefik dashboard it's not needed.
+    #labels:
+    #  - "traefik.enable=true"
+    #  - "traefik.docker.network=internal"
+    #  - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.yourdomain.com`)"
+    #  - "traefik.http.routers.traefik-dashboard.service=traefik-dashboard"
+    #  - "traefik.http.services.traefik-dashboard.loadbalancer.server.port=8080"
+    networks:
+      - internal
+      - remotely-network
+
+  remotely:
+    image: immybot/remotely:latest
+    container_name: remotely
+    volumes:
+      - remotely_data:/app/AppData
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    networks:
+      - remotely-network
+    environment:
+      # ASPNETCORE environment variables should *not* be changed.
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_HTTP_PORTS=5000
+
+      # Other ASP.NET Core configurations can be overridden here, such as Logging.
+      # See https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/?view=aspnetcore-8.0
+      - Serilog__MinimumLevel__Override__Microsoft.AspNetCore=Warning
+      - Serilog__MinimumLevel__Override__System=Warning
+
+      # Values for DbProvider are SQLite, SQLServer, and PostgreSQL.
+      - Remotely_ApplicationOptions__DbProvider=SQLite
+      # The Docker gateway will be used in Forwarded Headers, which is necessary to
+      # to correctly determine request hostname and scheme within the app.  If you change
+      # the network config, you must update this value as well.
+      - Remotely_ApplicationOptions__DockerGateway=172.28.0.1
+      # This path shouldn't be changed.  It points to the Docker volume.
+      - Remotely_ConnectionStrings__SQLite=Data Source=/app/AppData/Remotely.db
+      # If using SQL Server, change the connection string to point to your SQL Server instance.
+      #- Remotely_ConnectionStrings__SQLServer=Server=(localdb)\\mssqllocaldb;Database=Remotely-Server-53bc9b9d-9d6a-45d4-8429-2a2761773502;Trusted_Connection=True;MultipleActiveResultSets=true
+      # If using PostgreSQL, change the connection string to point to your PostgreSQL instance.
+      #- Remotely_ConnectionStrings__PostgreSQL=Host=localhost;Database=Remotely;Username=postgres;Password=changeme;
+     labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=remotely-network"
+      - "traefik.http.services.remotely.loadbalancer.server.port=5000"
+      - "traefik.http.routers.remotely.rule=Host(`remotely.yourdomain.com`)"
+      - "traefik.http.routers.remotely.entrypoints=websecure"
+      - "traefik.http.routers.remotely.tls=true"
+      - "traefik.http.routers.remotely-http.rule=Host(`remotely.yourdomain.com`)"
+      - "traefik.http.routers.remotely-http.entrypoints=web"
+      - "traefik.http.routers.remotely-http.middlewares=remotely-secure"
+      - "traefik.http.middlewares.remotely-secure.redirectscheme.scheme=https"
+
+volumes:
+  remotely-data:
+
